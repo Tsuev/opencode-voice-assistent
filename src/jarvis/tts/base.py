@@ -17,7 +17,12 @@ class Audio:
 
     def __post_init__(self) -> None:
         if self.samples.ndim > 1:
-            self.samples = self.samples.reshape(-1)
+            # Accept both (N, channels) and (channels, N).  A naive reshape
+            # interleaves the channels and destroys the waveform.
+            if self.samples.shape[0] > self.samples.shape[1] or self.samples.shape[1] <= 8:
+                self.samples = self.samples.mean(axis=1)
+            else:
+                self.samples = self.samples.mean(axis=0)
         if self.samples.dtype != np.float32:
             self.samples = self.samples.astype(np.float32, copy=False)
         if self.samples.size:
@@ -39,4 +44,10 @@ class Audio:
 class TTSProvider(Protocol):
     name: str
 
-    async def synthesize(self, text: str, voice: str, speed: float = 1.0) -> Audio: ...
+    async def synthesize(
+        self,
+        text: str,
+        voice: str,
+        speed: float = 1.0,
+        language: str | None = None,
+    ) -> Audio: ...

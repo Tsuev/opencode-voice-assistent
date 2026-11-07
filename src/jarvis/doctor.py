@@ -255,8 +255,11 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
         checks.append(Check("mic signal", "warn", f"не удалось проверить: {exc}"))
 
     # TTS --------------------------------------------------------------------
-    piper_model = paths.voices_dir / f"{config.tts.ru.voice}.onnx"
-    piper_detail = f"{config.tts.ru.voice} — " + (
+    piper_voice = (
+        config.tts.ru.voice if config.tts.ru.engine == "piper" else "ru_RU-ruslan-medium"
+    )
+    piper_model = paths.voices_dir / f"{piper_voice}.onnx"
+    piper_detail = f"{piper_voice} — " + (
         "модель есть" if piper_model.exists() else "модель скачается при первом синтезе"
     )
     if not _has_module("piper"):
@@ -271,8 +274,11 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
             )
         )
 
+    kokoro_voice = (
+        config.tts.en.voice if config.tts.en.engine == "kokoro" else "bm_george"
+    )
     kokoro_model = paths.models_dir / "kokoro-v1.0.onnx"
-    kokoro_detail = f"{config.tts.en.voice} — " + (
+    kokoro_detail = f"{kokoro_voice} — " + (
         "модель есть" if kokoro_model.exists() else "модель скачается при первом синтезе"
     )
     if not _has_module("kokoro_onnx"):
@@ -284,6 +290,39 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
                 "ok" if kokoro_model.exists() else "warn",
                 kokoro_detail,
                 None if kokoro_model.exists() else "jarvis voices install en",
+            )
+        )
+
+    if "omnivoice_cpp" in {config.tts.ru.engine, config.tts.en.engine}:
+        from .tts.omnivoice_cpp import OmniVoiceCppTTS
+        from .tts.voice_import import list_assets
+
+        ready, reason = OmniVoiceCppTTS.available(
+            paths,
+            config.tts.omnivoice_cpp,
+            config.tts.ru.voice
+            if config.tts.ru.engine == "omnivoice_cpp"
+            else config.tts.en.voice,
+        )
+        checks.append(
+            Check(
+                "omnivoice.cpp",
+                "ok" if ready else "warn",
+                reason,
+                None
+                if ready
+                else "jarvis voices install --engine omnivoice-cpp && ./install.sh",
+            )
+        )
+        assets = list_assets(paths)
+        checks.append(
+            Check(
+                "clone voice",
+                "ok" if assets else "warn",
+                ", ".join(asset.name for asset in assets) if assets else "голос не импортирован",
+                None
+                if assets
+                else "jarvis voices import --name JARVIS --from voicestudio",
             )
         )
 
@@ -315,7 +354,21 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
         )
 
     # Wake word --------------------------------------------------------------
-    if config.wake.engine == "openwakeword":
+    if config.wake.engine == "vad-whisper":
+        if not _has_module("faster_whisper"):
+            checks.append(
+                Check("wake", "fail", "faster-whisper не установлен", "uv sync --all-groups")
+            )
+        else:
+            checks.append(
+                Check(
+                    "wake",
+                    "ok",
+                    f"vad-whisper, «{config.wake.phrase}», {config.wake.stt_model} "
+                    f"({config.wake.language})",
+                )
+            )
+    elif config.wake.engine == "openwakeword":
         if not _has_module("openwakeword"):
             checks.append(
                 Check("wake", "fail", "openwakeword не установлен", "uv sync --all-groups")
@@ -334,16 +387,21 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
             )
     elif config.wake.engine == "porcupine":
         has_key = bool(config.wake.access_key or os.environ.get("PICOVOICE_ACCESS_KEY"))
+        keyword = Path(config.wake.keyword_path).expanduser() if config.wake.keyword_path else None
+        has_keyword = bool(keyword and keyword.exists())
+        ok = _has_module("pvporcupine") and has_key and has_keyword
         checks.append(
             Check(
                 "wake",
-                "ok" if _has_module("pvporcupine") and has_key else "warn",
-                "porcupine, ключ " + ("есть" if has_key else "не задан"),
-                None if has_key else "wake.access_key или PICOVOICE_ACCESS_KEY",
+                "ok" if ok else "warn",
+                "porcupine, "
+                + ("ключ есть" if has_key else "ключ не задан")
+                + (", keyword есть" if has_keyword else ", keyword не задан"),
+                None if ok else "wake.access_key + wake.keyword_path (русский .ppn)",
             )
         )
     else:
-        checks.append(Check("wake", "warn", "vad-whisper появится в P2", None))
+        checks.append(Check("wake", "fail", f"неизвестный движок: {config.wake.engine}"))
 
     # Disk / platform --------------------------------------------------------
     try:

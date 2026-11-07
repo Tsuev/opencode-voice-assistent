@@ -81,5 +81,11 @@ class KokoroTTS:
         )
         return Audio(np.asarray(samples, dtype=np.float32), int(sample_rate))
 
-    async def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0) -> Audio:
+    async def synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+        language: str | None = None,
+    ) -> Audio:
         return await asyncio.to_thread(self._synthesize_sync, text, voice or self.voice, speed)

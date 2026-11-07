@@ -42,6 +42,10 @@ class AppPaths:
         return self.data_dir / "models"
 
     @property
+    def bin_dir(self) -> Path:
+        return self.data_dir / "bin"
+
+    @property
     def voices_dir(self) -> Path:
         return self.models_dir / "voices"
 

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from pathlib import Path
 
 import numpy as np
 
 from ..config import SttConfig
+
+log = logging.getLogger(__name__)
 
 
 class WhisperSTT:
@@ -29,12 +32,28 @@ class WhisperSTT:
                 from faster_whisper import WhisperModel
 
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
-                self._model = WhisperModel(
-                    self.config.model,
-                    device=self.config.device,
-                    compute_type=self.config.compute_type,
-                    download_root=str(self.cache_dir),
-                )
+                try:
+                    self._model = WhisperModel(
+                        self.config.model,
+                        device=self.config.device,
+                        compute_type=self.config.compute_type,
+                        download_root=str(self.cache_dir),
+                    )
+                except Exception as exc:  # noqa: BLE001 - cuBLAS may be missing
+                    if self.config.device == "cpu":
+                        raise
+                    log.warning(
+                        "faster-whisper на %s не загрузился (%s); перехожу на CPU",
+                        self.config.device,
+                        exc,
+                    )
+                    self.config.device = "cpu"
+                    self._model = WhisperModel(
+                        self.config.model,
+                        device="cpu",
+                        compute_type=self.config.compute_type,
+                        download_root=str(self.cache_dir),
+                    )
         return self._model
 
     def _transcribe_sync(self, samples: np.ndarray, sample_rate: int) -> str:

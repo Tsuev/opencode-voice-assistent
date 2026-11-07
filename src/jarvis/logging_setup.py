@@ -69,6 +69,10 @@ def setup_logging(
         "phonemizer",
         "kokoro_onnx",
         "espeakng_loader",
+        "transformers",
+        "torch",
+        "omnivoice",
+        "pvporcupine",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

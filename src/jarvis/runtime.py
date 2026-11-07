@@ -97,6 +97,7 @@ class Runtime:
         if self._client is not None:
             await self._client.close()
             self._client = None
+        await self.tts.close()
         await self.state.set(AssistantState.OFFLINE)
 
     async def client(self) -> OpencodeClient:

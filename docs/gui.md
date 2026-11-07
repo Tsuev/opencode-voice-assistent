@@ -70,9 +70,9 @@ mode `0600`). Pass it as
   },
   "language": "ru",
   "config": {
-    "wake": {"engine": "openwakeword", "phrase": "hey jarvis"},
-    "stt": {"model": "small", "language": "auto"},
-    "tts": {"ru": {"voice": "ru_RU-ruslan-medium"}, "en": {"voice": "bm_george"}},
+    "wake": {"engine": "vad-whisper", "phrase": "джарвис"},
+    "stt": {"model": "small"},
+    "tts": {"ru": {"engine": "omnivoice_cpp", "voice": "jarvis"}, "en": {"engine": "omnivoice_cpp", "voice": "jarvis"}},
     "speech": {"max_chars": 400, "max_sentence_chars": 180}
   },
   "session_id": "ses_...",

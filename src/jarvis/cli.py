@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import time
 from pathlib import Path
 
@@ -14,7 +15,14 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
-from .config import JarvisConfig, ensure_api_token, init_config, load_config, save_config
+from .config import (
+    JarvisConfig,
+    VoiceConfig,
+    ensure_api_token,
+    init_config,
+    load_config,
+    save_config,
+)
 from .doctor import checks_as_json, run_checks
 from .events import EventType, Subscription
 from .logging_setup import setup_logging
@@ -31,6 +39,12 @@ app = typer.Typer(
     help="Локальный голосовой ассистент для OpenCode.",
 )
 console = Console()
+
+# Legacy Windows consoles are often cp1251; rich's check marks and arrows then
+# raise UnicodeEncodeError.  Replace unencodable characters instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    with contextlib.suppress(Exception):
+        _stream.reconfigure(errors="replace")
 
 
 @app.callback()
@@ -211,7 +225,9 @@ def start(
     ctx: typer.Context,
     no_speak: bool = typer.Option(False, "--no-speak", help="Не озвучивать ответы."),
     no_beep: bool = typer.Option(False, "--no-beep", help="Не пищать при активации."),
-    engine: str | None = typer.Option(None, "--engine", help="openwakeword | porcupine"),
+    engine: str | None = typer.Option(
+        None, "--engine", help="vad-whisper | openwakeword | porcupine"
+    ),
     wav: Path | None = typer.Option(
         None, "--wav", help="Прогнать WAV-файл вместо микрофона (отладка/CI)."
     ),
@@ -230,7 +246,13 @@ def start(
 
         runtime = Runtime(config, paths, console=console)
         await runtime.start()
-        detector = create_detector(config.wake, console=console)
+        detector = create_detector(
+            config.wake,
+            console=console,
+            cache_dir=paths.cache_dir / "whisper",
+            stt_config=config.stt,
+            vad_config=config.vad,
+        )
         stt = WhisperSTT(
             config.stt,
             cache_dir=paths.cache_dir / "whisper",
@@ -373,17 +395,50 @@ def models() -> None:
     console.print(table)
 
 
+def _normalize_engine(engine: str | None) -> str | None:
+    if engine is None:
+        return None
+    return engine.strip().lower().replace("-", "_")
+
+
 @app.command()
 def voices(
     ctx: typer.Context,
-    action: str = typer.Argument("list", help="list | install"),
+    action: str = typer.Argument(
+        "list", help="list | install | import | use | warmup"
+    ),
     language: str | None = typer.Option(None, "--lang", help="ru | en | all"),
-    engine: str | None = typer.Option(None, "--engine", help="piper | kokoro"),
+    engine: str | None = typer.Option(
+        None, "--engine", help="piper | kokoro | omnivoice-cpp | moss"
+    ),
+    name: str | None = typer.Option(None, "--name", help="Имя голоса, например JARVIS"),
+    source: str = typer.Option(
+        "voicestudio", "--from", help="voicestudio | file"
+    ),
+    audio: Path | None = typer.Option(
+        None, "--audio", help="Референс-аудио для --from file"
+    ),
+    text: str | None = typer.Option(None, "--text", help="Текст референса или путь к .txt"),
+    target_name: str | None = typer.Option(None, "--target", help="Имя папки голоса"),
 ) -> None:
-    """Список голосов и загрузка моделей."""
+    """Список голосов, импорт клона, выбор движка и прогрев модели."""
+    from .tts.voice_import import (
+        VoiceImportError,
+        import_from_file,
+        import_from_voicestudio,
+        list_assets,
+        load_asset,
+        slugify,
+    )
+
     config, paths = _load(ctx)
+    engine = _normalize_engine(engine)
+    action = action.strip().lower()
+    if language == "both":
+        language = "all"
 
     if action == "list":
+        assets = {asset.name: asset for asset in list_assets(paths)}
         table = Table(title="Локальные голоса", header_style="bold")
         table.add_column("Движок")
         table.add_column("Голос")
@@ -392,34 +447,182 @@ def voices(
         table.add_column("Готов")
         table.add_column("Описание", overflow="fold")
         for voice in ALL_VOICES:
-            if language and language != "all" and voice.language != language:
+            if language and language != "all" and language not in voice.language.split("+"):
                 continue
             if engine and voice.engine != engine:
                 continue
             if voice.engine == "piper":
                 ready = (paths.voices_dir / f"{voice.name}.onnx").exists()
+            elif voice.engine == "omnivoice_cpp":
+                ready = voice.name in assets
             else:
                 ready = (paths.models_dir / "kokoro-v1.0.onnx").exists()
+            description = voice.description
+            if voice.engine == "omnivoice_cpp" and voice.name in assets:
+                description = f"{description}; импортирован"
             table.add_row(
                 voice.engine,
                 voice.name,
                 voice.language,
                 voice.gender,
-                "[green]✓[/green]" if ready else "[dim]—[/dim]",
-                voice.description,
+                "[green]да[/green]" if ready else "[dim]—[/dim]",
+                description,
+            )
+        known = {voice.name for voice in ALL_VOICES}
+        for asset in assets.values():
+            if asset.name in known:
+                continue
+            table.add_row(
+                "clone",
+                asset.name,
+                "ru+en",
+                "clone",
+                "[green]да[/green]",
+                f"импортирован ({asset.profile.get('source', 'file')})",
             )
         console.print(table)
+        if not assets:
+            console.print(
+                "[dim]Клон ещё не импортирован: "
+                "`jarvis voices import --name JARVIS --from voicestudio`[/dim]"
+            )
         return
 
-    if action != "install":
-        raise typer.BadParameter("action должен быть list или install")
+    if action == "install":
+        target = language or "all"
+        if engine in {None, "piper"} and target in {"ru", "all"}:
+            piper_voice = (
+                config.tts.ru.voice
+                if config.tts.ru.engine == "piper"
+                else "ru_RU-ruslan-medium"
+            )
+            ensure_piper_voice(piper_voice, paths.voices_dir, console=console)
+        if engine in {None, "kokoro"} and target in {"en", "all"}:
+            ensure_kokoro(paths.models_dir, console=console)
+        if engine == "omnivoice_cpp":
+            from .tts.omnivoice_cpp import OmniVoiceCppTTS
 
-    target = language or "all"
-    if target in {"ru", "all"} and (engine in {None, "piper"}):
-        ensure_piper_voice(config.tts.ru.voice, paths.voices_dir, console=console)
-    if target in {"en", "all"} and (engine in {None, "kokoro"}):
-        ensure_kokoro(paths.models_dir, console=console)
-    console.print("[green]Готово.[/green] Запустите `jarvis voices` для проверки.")
+            probe = OmniVoiceCppTTS("jarvis", paths, config.tts.omnivoice_cpp)
+            ready, reason = probe.model_ready()
+            if ready:
+                console.print(f"[green]OmniVoice.cpp готов:[/green] {reason}")
+                console.print(
+                    "Импортируйте голос: [bold]jarvis voices import "
+                    "--name JARVIS --from voicestudio[/bold]"
+                )
+            else:
+                console.print(f"[yellow]OmniVoice.cpp не готов:[/yellow] {reason}")
+                console.print(
+                    "Скачайте веса и бинарник:\n"
+                    "  uv run python scripts/fetch_models.py --engine omnivoice-cpp "
+                    "--model q8 --accept-license\n"
+                    "  ./install.sh --build-from-source   # если нет prebuilt"
+                )
+            return
+        if engine == "moss":
+            console.print(
+                "[yellow]MOSS пока не подключён.[/yellow] "
+                "Он появится как опциональный ONNX-движок позже."
+            )
+            return
+        if engine not in {None, "piper", "kokoro"}:
+            raise typer.BadParameter("engine должен быть piper, kokoro или omnivoice-cpp")
+        console.print("[green]Готово.[/green] Запустите `jarvis voices` для проверки.")
+        return
+
+    if action == "import":
+        voice_name = (name or "JARVIS").strip()
+        target = target_name or slugify(voice_name)
+        try:
+            if source == "voicestudio":
+                asset = import_from_voicestudio(voice_name, paths, target=target)
+            elif source == "file":
+                if audio is None or text is None:
+                    raise typer.BadParameter("Для --from file нужны --audio и --text")
+                text_value: str | Path = text
+                if text and Path(text).expanduser().exists():
+                    text_value = Path(text).expanduser()
+                asset = import_from_file(
+                    voice_name,
+                    audio,
+                    text_value,
+                    paths,
+                    target=target,
+                )
+            else:
+                raise typer.BadParameter("--from должен быть voicestudio или file")
+        except VoiceImportError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        console.print(f"[green]Импортирован:[/green] {asset.name}")
+        console.print(f"  папка: {asset.directory}")
+        console.print(f"  аудио: {asset.reference_audio}")
+        console.print(f"  текст: {asset.reference_text[:80]}...")
+        return
+
+    if action == "use":
+        voice_name = (name or "JARVIS").strip()
+        target = target_name or slugify(voice_name)
+        chosen_engine = engine or "omnivoice_cpp"
+        if chosen_engine not in {"piper", "kokoro", "say", "omnivoice_cpp"}:
+            raise typer.BadParameter(
+                "пока доступны piper, kokoro, say и omnivoice-cpp"
+            )
+        if chosen_engine == "omnivoice_cpp":
+            try:
+                load_asset(target, paths)
+            except VoiceImportError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1) from exc
+        scope = (language or "all").lower()
+        if scope == "both":
+            scope = "all"
+        if scope not in {"ru", "en", "all"}:
+            raise typer.BadParameter("--lang должен быть ru, en, all или both")
+        voice_config = VoiceConfig(engine=chosen_engine, voice=target)  # type: ignore[arg-type]
+        if scope in {"ru", "all"}:
+            config.tts.ru = voice_config
+        if scope in {"en", "all"}:
+            config.tts.en = voice_config
+        path = save_config(config, paths=paths)
+        console.print(
+            f"[green]Голос «{target}» выбран для {scope}.[/green] Конфиг: {path}"
+        )
+        if chosen_engine == "omnivoice_cpp":
+            console.print(
+                f"Прогрейте модель: [bold]jarvis voices warmup --name {voice_name}[/bold]"
+            )
+        return
+
+    if action == "warmup":
+        voice_name = (name or "JARVIS").strip()
+        target = target_name or slugify(voice_name)
+        from .tts.omnivoice_cpp import OmniVoiceCppError, OmniVoiceCppTTS
+
+        provider = OmniVoiceCppTTS(
+            target, paths, config.tts.omnivoice_cpp, console=console
+        )
+
+        async def run() -> None:
+            started = time.perf_counter()
+            try:
+                await provider.warmup()
+            except OmniVoiceCppError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1) from exc
+            finally:
+                await provider.close()
+            console.print(
+                f"[green]OmniVoice.cpp прогрет за "
+                f"{time.perf_counter() - started:.1f} c[/green]"
+            )
+
+        asyncio.run(run())
+        return
+
+    raise typer.BadParameter(
+        "action должен быть list, install, import, use или warmup"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +632,9 @@ def voices(
 def wake_test(
     ctx: typer.Context,
     seconds: float = typer.Option(20.0, "--seconds", "-s", help="0 — до Ctrl+C."),
-    engine: str | None = typer.Option(None, "--engine", help="openwakeword | porcupine"),
+    engine: str | None = typer.Option(
+        None, "--engine", help="vad-whisper | openwakeword | porcupine"
+    ),
     beep: bool = typer.Option(False, "--beep", help="Пищать при детекции."),
 ) -> None:
     """Проверить wake word на живом микрофоне."""
@@ -441,7 +646,13 @@ def wake_test(
     from .audio.input import Microphone
     from .wake.base import create_detector
 
-    detector = create_detector(config.wake, console=console)
+    detector = create_detector(
+        config.wake,
+        console=console,
+        cache_dir=paths.cache_dir / "whisper",
+        stt_config=config.stt,
+        vad_config=config.vad,
+    )
     microphone = Microphone(
         config.audio.input_device,
         sample_rate=16000,
@@ -508,8 +719,9 @@ def wake_test(
         )
     elif detections == 0:
         console.print(
-            "[yellow]Совет:[/yellow] проверьте микрофон, произношение и порог "
-            "(`wake.threshold`). Для русского «Джарвис» включите fallback в P2."
+            "[yellow]Совет:[/yellow] проверьте микрофон и произношение. "
+            "Для фразы «Джарвис» используйте `--engine vad-whisper` "
+            "(фраза wake.phrase = \"джарвис\")."
         )
 
 

@@ -127,6 +127,19 @@ class VoiceLoop:
                 with self.microphone.frames_stream() as frames:
                     if not self._wait_for_wake(frames):
                         break
+                    # VAD+Whisper can capture the whole utterance, e.g.
+                    # "Джарвис, открой калькулятор".  Use that transcript
+                    # instead of making the user repeat the command.
+                    wake_text = (getattr(self.detector, "last_text", "") or "").strip()
+                    if wake_text:
+                        with contextlib.suppress(Exception):
+                            self.detector.last_text = ""
+                        command = strip_wake_word(wake_text, _WAKE_WORDS).strip(" ,.!?-—")
+                        if command:
+                            if not self._handle_text(command):
+                                continue
+                            self._conversation_mode()
+                            continue
                     pre_roll = self._pre_roll
                     audio = self._record_command(
                         frames,
@@ -245,7 +258,9 @@ class VoiceLoop:
             if not conversation:
                 self._speak("Не расслышал.")
             return False
+        return self._handle_text(text, conversation=conversation)
 
+    def _handle_text(self, text: str, *, conversation: bool = False) -> bool:
         command = strip_wake_word(text, _WAKE_WORDS).strip(" ,.!?-—")
         if not command:
             self._speak("Слушаю.")

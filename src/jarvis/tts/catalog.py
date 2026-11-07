@@ -37,7 +37,17 @@ KOKORO_VOICES: tuple[VoiceInfo, ...] = (
     VoiceInfo("kokoro", "af_heart", "en", "female", "Американский женский"),
 )
 
-ALL_VOICES: tuple[VoiceInfo, ...] = PIPER_VOICES + KOKORO_VOICES
+CLONE_VOICES: tuple[VoiceInfo, ...] = (
+    VoiceInfo(
+        "omnivoice_cpp",
+        "jarvis",
+        "ru+en",
+        "clone",
+        "Твой клон JARVIS (OmniVoice.cpp, GGUF, ~1 ГБ)",
+    ),
+)
+
+ALL_VOICES: tuple[VoiceInfo, ...] = PIPER_VOICES + KOKORO_VOICES + CLONE_VOICES
 
 
 def voices_for(engine: str | None = None, language: str | None = None) -> list[VoiceInfo]:
@@ -45,7 +55,7 @@ def voices_for(engine: str | None = None, language: str | None = None) -> list[V
     if engine:
         result = [voice for voice in result if voice.engine == engine]
     if language:
-        result = [voice for voice in result if voice.language == language]
+        result = [voice for voice in result if language in voice.language.split("+")]
     return result
 
 

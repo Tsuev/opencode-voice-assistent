@@ -97,18 +97,34 @@ def create_app(runtime: Runtime) -> FastAPI:
 
     @app.get("/api/voices", dependencies=auth)
     async def voices() -> dict[str, Any]:
-        return {
-            "voices": [
-                {
-                    "engine": voice.engine,
-                    "name": voice.name,
-                    "language": voice.language,
-                    "gender": voice.gender,
-                    "description": voice.description,
-                }
-                for voice in ALL_VOICES
-            ]
-        }
+        from ..tts.voice_import import list_assets
+
+        items = [
+            {
+                "engine": voice.engine,
+                "name": voice.name,
+                "language": voice.language,
+                "gender": voice.gender,
+                "description": voice.description,
+            }
+            for voice in ALL_VOICES
+        ]
+        known = {item["name"] for item in items}
+        paths = getattr(runtime, "paths", None)
+        if paths is not None:
+            for asset in list_assets(paths):
+                if asset.name in known:
+                    continue
+                items.append(
+                    {
+                        "engine": "clone",
+                        "name": asset.name,
+                        "language": "ru+en",
+                        "gender": "clone",
+                        "description": f"Импортирован ({asset.profile.get('source', 'file')})",
+                    }
+                )
+        return {"voices": items}
 
     @app.get("/api/models", dependencies=auth)
     async def models() -> dict[str, Any]:
@@ -143,7 +159,7 @@ def create_app(runtime: Runtime) -> FastAPI:
             supplied = request.query_params.get("token") or request.headers.get(
                 "authorization", ""
             ).removeprefix("Bearer ")
-            if not secrets.compare_digest(supplied, expected):
+            if not supplied or not secrets.compare_digest(supplied, expected):
                 raise HTTPException(status_code=401, detail="Invalid API token")
 
         async def stream():

@@ -125,5 +125,13 @@ class SayTTS:
             return self._synthesize_windows(text, speed)
         return self._synthesize_linux(text, speed)
 
-    async def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0) -> Audio:
+    async def synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+        language: str | None = None,
+    ) -> Audio:
+        if language in {"ru", "en"}:
+            self.language = language
         return await asyncio.to_thread(self._synthesize_sync, text, speed)

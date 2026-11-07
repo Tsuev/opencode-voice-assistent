@@ -40,6 +40,7 @@ class OpenWakeWordDetector:
         self.debounce = debounce
         self.phrase = phrase
         self.last_score = 0.0
+        self.last_text = ""
         self._cooldown_until = 0.0
         self._model_path = self._resolve_model(model_path)
         self._model = Model(wakeword_model_paths=[str(self._model_path)])
@@ -90,3 +91,5 @@ class OpenWakeWordDetector:
     def reset(self) -> None:
         self._model.reset()
         self._cooldown_until = 0.0
+        self.last_score = 0.0
+        self.last_text = ""

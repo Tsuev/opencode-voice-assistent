@@ -18,11 +18,13 @@ def _paths(tmp_path: Path) -> AppPaths:
 def test_defaults_are_local_and_jarvis() -> None:
     config = JarvisConfig()
     assert config.language == "ru"
-    assert config.wake.engine == "openwakeword"
-    assert config.wake.phrase == "hey jarvis"
+    assert config.wake.engine == "vad-whisper"
+    assert config.wake.phrase == "джарвис"
+    assert config.wake.stt_model == "tiny"
     assert config.stt.engine == "faster-whisper"
     assert config.tts.ru.engine == "piper"
     assert config.tts.en.engine == "kokoro"
+    assert config.tts.omnivoice_cpp.port == 47810
     assert config.opencode.mode == "spawn"
 
 

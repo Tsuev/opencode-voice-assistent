@@ -66,5 +66,11 @@ class PiperTTS:
         samples = np.concatenate([chunk.audio_float_array for chunk in chunks])
         return Audio(samples.astype(np.float32, copy=False), chunks[0].sample_rate)
 
-    async def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0) -> Audio:
+    async def synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+        language: str | None = None,
+    ) -> Audio:
         return await asyncio.to_thread(self._synthesize_sync, text, speed)

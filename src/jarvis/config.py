@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .paths import AppPaths, get_paths
 
 WakeEngine = Literal["openwakeword", "porcupine", "vad-whisper"]
-TtsEngine = Literal["piper", "kokoro", "say"]
+TtsEngine = Literal["piper", "kokoro", "say", "omnivoice_cpp", "moss", "omnivoice"]
 
 
 class _Section(BaseModel):
@@ -29,19 +29,36 @@ class _Section(BaseModel):
 
 
 class WakeConfig(_Section):
-    engine: WakeEngine = "openwakeword"
-    phrase: str = "hey jarvis"
+    # ``vad-whisper`` is the default because it understands the Russian
+    # "Джарвис" without an account or a custom model.  English users can
+    # switch to openWakeWord/Porcupine from the config or the installer.
+    engine: WakeEngine = "vad-whisper"
+    phrase: str = "джарвис"
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     model_path: str | None = None
     fallback_ru: bool = True
     debounce: float = Field(default=1.2, ge=0.0)
     access_key: str | None = None
 
+    # --- VAD + Whisper wake detector ---------------------------------
+    language: Literal["ru", "en"] = "ru"
+    stt_model: str = "tiny"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    pre_roll_ms: int = Field(default=400, ge=0, le=3000)
+    silence_ms: int = Field(default=600, ge=100, le=3000)
+    min_speech_ms: int = Field(default=160, ge=40, le=2000)
+    max_segment_s: float = Field(default=8.0, ge=1.0, le=30.0)
+
+    # --- Porcupine custom Russian keyword ----------------------------
+    keyword_path: str | None = None
+    sensitivity: float = Field(default=0.6, ge=0.0, le=1.0)
+
 
 class SttConfig(_Section):
     engine: Literal["faster-whisper", "mlx-whisper"] = "faster-whisper"
     model: str = "small"
-    device: str = "auto"
+    device: str = "cpu"
     compute_type: str = "int8"
     beam_size: int = 1
     vad_filter: bool = True
@@ -54,12 +71,35 @@ class VoiceConfig(_Section):
     model_path: str | None = None
 
 
+class OmniVoiceCppConfig(_Section):
+    """Settings for the lightweight OmniVoice.cpp sidecar (GGUF).
+
+    The sidecar is an OpenAI-compatible HTTP server.  Jarvis starts it on
+    demand and keeps it warm; the cloned voice is registered on every start
+    from the local voice assets.
+    """
+
+    binary: str | None = None
+    model: str | None = None
+    codec: str | None = None
+    host: str = "127.0.0.1"
+    port: int = Field(default=47810, ge=1024, le=65535)
+    device: str = "auto"  # auto | CPU | CUDA0 | Vulkan0 | MTL0
+    auto_start: bool = True
+    startup_timeout: float = Field(default=120.0, ge=5.0)
+    request_timeout: float = Field(default=180.0, ge=5.0)
+    log_file: str | None = None
+    fallback: bool = True
+    warmup_text: str = "Готов."
+
+
 class TtsConfig(_Section):
     ru: VoiceConfig = Field(
         default_factory=lambda: VoiceConfig(engine="piper", voice="ru_RU-ruslan-medium")
     )
     en: VoiceConfig = Field(default_factory=lambda: VoiceConfig(engine="kokoro", voice="bm_george"))
     autoplay: bool = True
+    omnivoice_cpp: OmniVoiceCppConfig = Field(default_factory=OmniVoiceCppConfig)
 
 
 class AudioConfig(_Section):
