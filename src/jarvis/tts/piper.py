@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from pathlib import Path
 
@@ -74,3 +75,9 @@ class PiperTTS:
         language: str | None = None,
     ) -> Audio:
         return await asyncio.to_thread(self._synthesize_sync, text, speed)
+
+    async def warmup(self) -> None:
+        """Load the ONNX model and warm its allocator."""
+        await asyncio.to_thread(self._load)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self._synthesize_sync, "Готов.", 1.0)

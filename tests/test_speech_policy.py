@@ -66,3 +66,11 @@ def test_wake_word_helpers() -> None:
         strip_wake_word("Хей Джарвис, открой Steam", ["хей джарвис", "джарвис"]) == "открой Steam"
     )
     assert strip_wake_word("Эй Джарвис, открой Steam", ["эй джарвис", "джарвис"]) == "открой Steam"
+
+
+def test_wake_word_fuzzy_matching_tolerates_whisper_typos() -> None:
+    assert contains_wake_word("Джаврис, открой Steam", ["джарвис"], fuzzy=True)
+    assert contains_wake_word("Джарвиз!", ["джарвис"], fuzzy=True)
+    assert contains_wake_word("hey javis", ["hey jarvis"], fuzzy=True)
+    assert not contains_wake_word("открой Steam", ["джарвис"], fuzzy=True)
+    assert not contains_wake_word("Джаврис", ["джарвис"], fuzzy=False)

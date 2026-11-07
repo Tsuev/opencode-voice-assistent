@@ -154,12 +154,18 @@ class TTSRouter:
 
     async def warmup(self, language: str | None = None) -> None:
         languages = [language] if language in {"ru", "en"} else ["ru", "en"]
+        seen: set[int] = set()
         for lang in languages:
             voice = self.voice_config(lang)
             provider = self.provider(voice)
+            if id(provider) in seen:
+                continue
+            seen.add(id(provider))
             warmup = getattr(provider, "warmup", None)
             if warmup is not None:
-                await warmup()
+                result = warmup()
+                if asyncio.iscoroutine(result):
+                    await result
 
     async def close(self) -> None:
         seen: set[int] = set()

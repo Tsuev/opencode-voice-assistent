@@ -22,33 +22,58 @@ git clone <repo> && cd opencode-voice-assistent
 
 На Windows запускай из **Git Bash** (ставится вместе с Git for Windows). Если
 Git Bash нет, используй PowerShell: `powershell -ExecutionPolicy Bypass -File install.ps1`.
-Скрипт поставит `uv`, Python 3.12, зависимости, скачает GGUF, соберёт или
-скачает `tts-server`, импортирует голос JARVIS из VoiceStudio и настроит
-`[tts.ru]`/`[tts.en]`.
+Скрипт поставит `uv`, Python 3.12, зависимости, скачает Piper/Kokoro и сразу
+настроит быстрые локальные голоса. VoiceStudio **не обязателен** и больше не
+запрашивается по умолчанию.
 
 Полезные варианты:
 
 ```bash
-./install.sh --model q4                 # меньше памяти (~660 МБ весов)
-./install.sh --offline --models-dir ./models
-./install.sh --build-from-source --cuda # Windows + RTX
-./install.sh --voice-audio ref.wav --voice-text ref.txt
+./install.sh                            # fast: Piper (RU) + Kokoro (EN)
+./install.sh --profile clone --voice-source assets
+                                        # OmniVoice + assets/ref.mp3 + ref.txt
+./install.sh --profile clone --model q4 # меньше памяти (~660 МБ весов)
+./install.sh --profile clone --offline --models-dir ./models
+./install.sh --profile clone --build-from-source --cuda # Windows + RTX
+./install.sh --voice-source file --voice-audio ref.wav --voice-text ref.txt
 ```
+
+Профили TTS:
+
+| Профиль | Что ставит | Когда использовать |
+|---|---|---|
+| `fast` (по умолчанию) | Piper RU + Kokoro EN | ноутбук, цель — ответ меньше секунды |
+| `clone` | OmniVoice.cpp + референс-голос | десктоп с GPU, важен тембр |
+| `auto` | `fast`, если референс не указан | безопасный дефолт |
+
+Если `--profile clone` не удался (нет CUDA/CMake/компилятора или плохой
+референс), установщик **не падает**, а настраивает `fast` и печатает, как
+повторить клонирование позже.
 
 ### Вручную
 
 ```bash
 uv sync
 uv run jarvis init
-uv run jarvis voices import --name JARVIS --from voicestudio
-uv run jarvis voices use --name JARVIS --lang both
-uv run jarvis voices warmup --name JARVIS
+uv run jarvis voices install --lang all      # Piper + Kokoro
 uv run jarvis doctor
 uv run jarvis say "Системы онлайн" -v ru
 uv run jarvis start
 ```
 
-VoiceStudio нужен **только один раз** — забрать референс-аудио и текст. В
+Клон голоса — опция:
+
+```bash
+# из репозитория: assets/ref.mp3 + assets/ref.txt
+uv run jarvis voices import --name JARVIS --from assets
+
+# или из своих файлов
+uv run jarvis voices import --name JARVIS --from file --audio ref.wav --text ref.txt
+uv run jarvis voices use --name JARVIS --lang both
+uv run jarvis voices warmup --name JARVIS
+```
+
+VoiceStudio нужен **только если явно указать** `--from voicestudio`. В
 рантайме Jarvis от него не зависит.
 
 ### Минимальные требования
@@ -65,15 +90,23 @@ VoiceStudio нужен **только один раз** — забрать ре�
 OmniVoice.cpp Q8 занимает ~1,2–1,5 ГБ RAM/VRAM. **CPU-инференс очень
 медленный** (RTF ~80 на тестовой машине); для RTX 3060 собирайте с
 `--cuda`, для Apple Silicon — с Metal. CPU — только fallback и только
-явно: `./install.sh --cpu`.
+явно: `./install.sh --profile clone --cpu`.
 
-Что нужно для сборки из исходников:
+Для профиля `fast` (Piper/Kokoro) **ничего собирать не нужно**: это
+ONNX-модели, которые работают на CPU и на Apple Silicon.
+
+Что нужно для сборки OmniVoice.cpp из исходников:
 
 - **Windows:** Visual Studio 2022 Build Tools (C++), CMake, CUDA Toolkit 12.8
-  для RTX. Без `nvcc` установщик остановится с подсказкой; `--cpu` — только
-  для проверки.
+  для RTX. Установщик сам ищет их в стандартных местах, даже если они не
+  попали в `PATH`; при необходимости подхватывает окружение `vcvars64.bat`.
 - **macOS Apple Silicon:** Xcode Command Line Tools (`xcode-select --install`)
   и CMake (`brew install cmake`). Metal включится автоматически.
+
+Если инструменты установлены, но терминал их «не видит», установщик всё равно
+найдёт CMake/CUDA/MSVC по стандартным путям. После установки новых программ
+можно также открыть новый терминал — `install.ps1` дополнительно перечитывает
+`PATH` из реестра.
 
 ### Offline / personal install
 
@@ -82,7 +115,7 @@ OmniVoice.cpp Q8 занимает ~1,2–1,5 ГБ RAM/VRAM. **CPU-инферен
 ```bash
 mkdir -p models
 # положить сюда omnivoice-base-Q8_0.gguf и omnivoice-tokenizer-Q8_0.gguf
-./install.sh --offline --models-dir ./models
+./install.sh --profile clone --offline --models-dir ./models
 ```
 
 `install.sh` проверит SHA256 и не будет ходить в сеть. Папка `models/`
@@ -124,7 +157,7 @@ uv run jarvis start --wav /tmp/scenario.wav --no-beep
 | `jarvis stt-test` | Запись и распознавание фразы |
 | `jarvis mic-test` | Уровень микрофона + сохранить WAV |
 | `jarvis voices list` | Список голосов и статус клона |
-| `jarvis voices import` | Импорт клона из VoiceStudio или файла |
+| `jarvis voices import` | Импорт клона из `assets/`, файла или VoiceStudio |
 | `jarvis voices use` | Выбрать движок и голос для RU/EN |
 | `jarvis voices warmup` | Прогреть OmniVoice.cpp и зарегистрировать голос |
 | `jarvis voices install` | Загрузить Piper/Kokoro или проверить OmniVoice |
@@ -168,22 +201,40 @@ mode = "spawn"                      # spawn | attach
 
 [wake]
 engine = "vad-whisper"              # vad-whisper | porcupine | openwakeword
-phrase = "джарвис"
+phrase = "джарвис"                  # плюс «Jarvis» и «Hey Jarvis»
 language = "ru"
-stt_model = "tiny"                  # tiny | base
+stt_model = "base"                  # tiny | base | small
+vad_mode = 1                        # 0 — чувствительнее, 3 — строже
+fuzzy = true                        # «Джаврис»/«Джарвиз» тоже сработают
+fuzzy_distance = 1
+hotwords = "Джарвис, Jarvis, Hey Jarvis"
 threshold = 0.5
 
 [stt]
-model = "small"                     # medium — точнее, но медленнее
+model = "small"                     # base — быстрее, medium — точнее
 device = "cpu"                      # cpu | cuda (нужны CUDA-библиотеки CTranslate2)
+hotwords = "Джарвис, OpenCode, Steam, калькулятор"
+warmup = true
+
+[vad]
+silence_ms = 450                    # было 800 — из-за этого команда «думала» лишнее
+wake_grace_ms = 1500               # сколько ждать начала команды после wake word
 
 [tts.ru]
-engine = "omnivoice_cpp"            # клон JARVIS
-voice = "jarvis"
+engine = "piper"                    # fast-профиль
+voice = "ru_RU-ruslan-medium"
 
 [tts.en]
-engine = "omnivoice_cpp"
-voice = "jarvis"
+engine = "kokoro"
+voice = "bm_george"
+
+# Профиль clone:
+# [tts.ru]
+# engine = "omnivoice_cpp"
+# voice = "jarvis"
+# [tts.en]
+# engine = "omnivoice_cpp"
+# voice = "jarvis"
 
 [tts.omnivoice_cpp]
 model = "…\\omnivoice-base-Q8_0.gguf"
@@ -207,9 +258,17 @@ jarvis language en
 ### Wake word
 
 По умолчанию используется **VAD + Whisper**: WebRTC VAD режет речь на
-сегменты, `faster-whisper tiny` распознаёт их, а Jarvis ищет «Джарвис». Это
-работает на Windows и macOS без аккаунтов и обучаемых моделей. Можно сразу
-сказать «Джарвис, открой калькулятор» — команда не потеряется.
+сегменты, `faster-whisper base` распознаёт их, а Jarvis ищет «Джарвис»,
+«Jarvis» и «Hey Jarvis». Это работает на Windows и macOS без аккаунтов и
+обучаемых моделей. Fuzzy-матчинг терпит типичные ошибки Whisper:
+«Джаврис», «Джарвиз», «Джавис». Можно сразу сказать «Джарвис, открой
+калькулятор» — команда не потеряется.
+
+Важно: встроенная модель `openWakeWord` — английская `hey_jarvis` и
+**не реагирует** на голое «Джарвис»/«Jarvis». Если в конфиге стоит
+`wake.engine = "openwakeword"`, для русского переключитесь на `vad-whisper`.
+`jarvis doctor` теперь предупреждает об этом, а `jarvis wake-test --debug`
+печатает каждый распознанный сегмент.
 
 Если нужен минимальный CPU и максимальная точность — Porcupine с русским
 custom keyword:

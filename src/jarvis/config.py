@@ -42,13 +42,24 @@ class WakeConfig(_Section):
 
     # --- VAD + Whisper wake detector ---------------------------------
     language: Literal["ru", "en"] = "ru"
-    stt_model: str = "tiny"
+    stt_model: str = "base"
     stt_device: str = "cpu"
     stt_compute_type: str = "int8"
     pre_roll_ms: int = Field(default=400, ge=0, le=3000)
-    silence_ms: int = Field(default=600, ge=100, le=3000)
+    silence_ms: int = Field(default=450, ge=100, le=3000)
     min_speech_ms: int = Field(default=160, ge=40, le=2000)
     max_segment_s: float = Field(default=8.0, ge=1.0, le=30.0)
+    # WebRTC VAD mode for the wake detector: 0 is most sensitive, 3 is most
+    # aggressive.  Mode 2 (the old default) sometimes missed the short Russian
+    # "Джарвис" on laptop microphones.
+    vad_mode: int = Field(default=1, ge=0, le=3)
+    # Whisper makes small spelling mistakes on proper nouns ("Джаврис",
+    # "Джарвиз").  Fuzzy matching keeps the wake word usable without a custom
+    # keyword model.
+    fuzzy: bool = True
+    fuzzy_distance: int = Field(default=1, ge=0, le=3)
+    hotwords: str | None = "Джарвис, Jarvis, Hey Jarvis"
+    debug: bool = False
 
     # --- Porcupine custom Russian keyword ----------------------------
     keyword_path: str | None = None
@@ -62,6 +73,12 @@ class SttConfig(_Section):
     compute_type: str = "int8"
     beam_size: int = 1
     vad_filter: bool = True
+    # Optional Whisper hints.  ``hotwords`` biases decoding towards proper
+    # nouns without the cost of a larger model.
+    hotwords: str | None = "Джарвис, OpenCode, Steam, калькулятор"
+    initial_prompt: str | None = None
+    cpu_threads: int | None = Field(default=None, ge=1, le=64)
+    warmup: bool = True
 
 
 class VoiceConfig(_Section):
@@ -112,9 +129,13 @@ class AudioConfig(_Section):
 class VadConfig(_Section):
     mode: int = Field(default=2, ge=0, le=3)
     pre_roll_ms: int = Field(default=400, ge=0, le=2000)
-    silence_ms: int = Field(default=800, ge=200, le=5000)
+    # 800 ms made every command feel 2-3 seconds slower: the assistant waited
+    # for a long tail of silence before even starting transcription.
+    silence_ms: int = Field(default=450, ge=200, le=5000)
     min_speech_ms: int = Field(default=160, ge=80, le=2000)
     max_command_s: float = Field(default=15.0, ge=1.0, le=120.0)
+    # How long to wait for the command to start after the wake word.  This is
+    # no longer a minimum recording length.
     wake_grace_ms: int = Field(default=1500, ge=0, le=5000)
 
 

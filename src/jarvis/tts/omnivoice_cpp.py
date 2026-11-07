@@ -12,6 +12,7 @@ import asyncio
 import base64
 import io
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ import numpy as np
 
 from ..config import OmniVoiceCppConfig
 from ..paths import AppPaths
+from ..toolchain import detect_toolchain
 from .base import Audio
 from .voice_import import VoiceAsset, VoiceImportError, load_asset
 
@@ -132,6 +134,31 @@ class OmniVoiceCppTTS:
             )
         return self._client
 
+    @staticmethod
+    def _runtime_environment() -> dict[str, str]:
+        """Make CUDA DLLs visible to the sidecar process.
+
+        The installer may find CUDA outside ``PATH`` (the normal case on
+        Windows after a fresh Toolkit install).  The sidecar needs
+        ``cudart64_*.dll``/``cublas64_*.dll`` at runtime, not just at build
+        time, so add the toolkit directory to its environment.
+        """
+        env = dict(os.environ)
+        toolchain = detect_toolchain()
+        if toolchain.cuda_root is None:
+            return env
+        cuda_bin = toolchain.cuda_root / "bin"
+        cuda_lib = toolchain.cuda_root / "lib64"
+        if cuda_bin.exists():
+            env["PATH"] = f"{cuda_bin}{os.pathsep}{env.get('PATH', '')}"
+        if cuda_lib.exists():
+            current = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = (
+                f"{cuda_lib}{os.pathsep}{current}" if current else str(cuda_lib)
+            )
+        env["CUDA_PATH"] = str(toolchain.cuda_root)
+        return env
+
     def _start_process(self) -> subprocess.Popen[bytes]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.log_path.open("ab")
@@ -157,6 +184,7 @@ class OmniVoiceCppTTS:
                 stdout=handle,
                 stderr=subprocess.STDOUT,
                 creationflags=_CREATE_NO_WINDOW,
+                env=self._runtime_environment(),
             )
         except OSError as exc:
             handle.close()
@@ -204,9 +232,11 @@ class OmniVoiceCppTTS:
     async def _ensure_server(self) -> None:
         async with self._lock:
             if await self._health():
-                # The server may have been restarted externally; the voice
-                # registry lives in memory, so always make sure ours is there.
-                await self._register_voice()
+                # The voice registry lives in the server's memory.  Check it
+                # once per process; doing a GET on every sentence added
+                # avoidable latency to the first audio.
+                if not self._registered:
+                    await self._register_voice()
                 return
 
             ready, reason = self.model_ready()
@@ -287,7 +317,17 @@ class OmniVoiceCppTTS:
         return Audio(samples, int(sample_rate))
 
     async def warmup(self) -> None:
+        """Start the sidecar and run one tiny synthesis.
+
+        Starting the process, loading the GGUF and initializing CUDA/Metal are
+        one-time costs.  Doing them at startup keeps them out of the first
+        spoken reply.  ``warmup_text`` used to be declared in the config but
+        was never used.
+        """
         await self._ensure_server()
+        text = (self.config.warmup_text or "").strip()
+        if text:
+            await self.synthesize(text, language="ru")
 
     async def synthesize(
         self,
@@ -308,15 +348,29 @@ class OmniVoiceCppTTS:
         if language in _LANGUAGE_NAMES:
             payload["language"] = _LANGUAGE_NAMES[language]
         client = self._client_or_create()
-        try:
-            response = await client.post(
+
+        async def post() -> httpx.Response:
+            return await client.post(
                 "/v1/audio/speech",
                 json=payload,
                 timeout=self.config.request_timeout,
             )
+
+        try:
+            response = await post()
         except httpx.HTTPError as exc:
             raise OmniVoiceCppError(f"OmniVoice.cpp недоступен: {exc}") from exc
+        if response.status_code >= 400 and self._registered:
+            # The server may have been restarted outside Jarvis.  Its voice
+            # registry is in memory, so re-register once and retry.
+            self._registered = False
+            await self._register_voice()
+            try:
+                response = await post()
+            except httpx.HTTPError as exc:
+                raise OmniVoiceCppError(f"OmniVoice.cpp недоступен: {exc}") from exc
         if response.status_code >= 400:
+            self._registered = False
             raise OmniVoiceCppError(
                 f"OmniVoice.cpp: HTTP {response.status_code} {response.text[:400]}"
             )

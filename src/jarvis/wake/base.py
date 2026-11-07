@@ -39,13 +39,17 @@ def create_detector(
             device=config.stt_device,
             compute_type=config.stt_compute_type,
             cache_dir=cache_dir,
-            vad_mode=vad_config.mode if vad_config is not None else 2,
+            vad_mode=config.vad_mode,
             pre_roll_ms=config.pre_roll_ms,
             silence_ms=config.silence_ms,
             min_speech_ms=config.min_speech_ms,
             max_segment_s=config.max_segment_s,
             debounce=config.debounce,
             threshold=config.threshold,
+            fuzzy=config.fuzzy,
+            fuzzy_distance=config.fuzzy_distance,
+            hotwords=config.hotwords,
+            debug=config.debug,
             console=console,
         )
     if config.engine == "openwakeword":

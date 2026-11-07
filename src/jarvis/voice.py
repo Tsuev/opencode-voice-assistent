@@ -144,7 +144,7 @@ class VoiceLoop:
                     audio = self._record_command(
                         frames,
                         pre_roll,
-                        grace_ms=self.config.vad.wake_grace_ms,
+                        start_timeout_ms=self.config.vad.wake_grace_ms,
                         timeout=None,
                     )
 
@@ -188,12 +188,15 @@ class VoiceLoop:
         frames,
         pre_roll: list[np.ndarray],
         *,
-        grace_ms: int = 0,
+        start_timeout_ms: int = 0,
         timeout: float | None = None,
     ) -> np.ndarray | None:
         block_ms = self.config.audio.block_ms
         collected: list[np.ndarray] = list(pre_roll)
-        speech = any(self.vad.is_speech(frame) for frame in pre_roll)
+        # Do not treat the wake word in ``pre_roll`` as the start of the
+        # command.  Otherwise a short pause after "Джарвис" looks like the end
+        # of the command and the assistant records only the wake word.
+        speech = False
         speech_run = 0
         silence_ms = 0
         elapsed_ms = 0
@@ -214,13 +217,20 @@ class VoiceLoop:
                 if speech_run * block_ms >= self.config.vad.min_speech_ms:
                     speech = True
                     silence_ms = 0
+                elif start_timeout_ms and elapsed_ms >= start_timeout_ms:
+                    return None
                 if timeout is not None and time.monotonic() - started > timeout:
                     return None
                 continue
 
             collected.append(frame)
             silence_ms = 0 if is_speech else silence_ms + block_ms
-            if silence_ms >= self.config.vad.silence_ms and elapsed_ms >= grace_ms:
+            if silence_ms >= self.config.vad.silence_ms:
+                log.debug(
+                    "command captured: %.2f c audio, %.2f c total",
+                    len(collected) * block_ms / 1000,
+                    elapsed_ms / 1000,
+                )
                 break
             if elapsed_ms >= self.config.vad.max_command_s * 1000:
                 break
@@ -238,7 +248,7 @@ class VoiceLoop:
             remaining = max(0.1, deadline - time.monotonic())
             try:
                 with self.microphone.frames_stream() as frames:
-                    audio = self._record_command(frames, [], grace_ms=0, timeout=remaining)
+                    audio = self._record_command(frames, [], timeout=remaining)
             except Exception:  # noqa: BLE001 - device may be busy
                 log.debug("conversation mode capture failed", exc_info=True)
                 return
@@ -253,7 +263,14 @@ class VoiceLoop:
     # ------------------------------------------------------------------
     def _handle_audio(self, audio: np.ndarray, *, conversation: bool = False) -> bool:
         self._set_state(AssistantState.TRANSCRIBING)
+        started = time.perf_counter()
         text = self._call(self.stt.transcribe(audio, 16000)).strip()
+        log.info(
+            "STT %.2f c, audio %.2f c -> %r",
+            time.perf_counter() - started,
+            audio.size / 16000,
+            text,
+        )
         if not text:
             if not conversation:
                 self._speak("Не расслышал.")

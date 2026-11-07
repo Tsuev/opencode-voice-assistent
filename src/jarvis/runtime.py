@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -270,7 +271,26 @@ class Runtime:
             await self.state.set(AssistantState.SPEAKING)
             await self.bus.emit(EventType.SPEECH_START, text=spoken, truncated=plan.truncated)
             try:
-                await self.tts.speak(spoken, language=resolved, speed=speed)
+                # Synthesize and play sentence by sentence instead of joining
+                # the whole reply into one blocking request.  The first
+                # sentence starts playing as soon as it is ready.
+                from .audio.output import play_audio
+
+                for chunk in plan.chunks:
+                    started = time.perf_counter()
+                    audio = await self.tts.synthesize(
+                        chunk, language=resolved, speed=speed
+                    )
+                    log.info(
+                        "TTS %.2f c for %d chars (%s)",
+                        time.perf_counter() - started,
+                        len(chunk),
+                        resolved,
+                    )
+                    if not audio.empty:
+                        await asyncio.to_thread(
+                            play_audio, audio, self.tts.output_device
+                        )
             finally:
                 await self.bus.emit(EventType.SPEECH_END, text=spoken)
                 await self.state.set(AssistantState.IDLE)

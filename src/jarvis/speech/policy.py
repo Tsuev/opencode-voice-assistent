@@ -166,6 +166,84 @@ def strip_wake_word(text: str, phrases: list[str]) -> str:
     return text
 
 
-def contains_wake_word(text: str, phrases: list[str]) -> bool:
+def _levenshtein(left: str, right: str, *, limit: int) -> int:
+    """Damerau-Levenshtein distance with an early exit above ``limit``.
+
+    Adjacent transpositions count as one edit: Whisper often writes "Джаврис"
+    instead of "Джарвис", and that should still wake the assistant.
+    """
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous: list[int] = list(range(len(right) + 1))
+    previous_previous: list[int] | None = None
+    for i in range(1, len(left) + 1):
+        current = [i]
+        row_min = i
+        for j in range(1, len(right) + 1):
+            cost = 0 if left[i - 1] == right[j - 1] else 1
+            value = min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + cost,
+            )
+            if (
+                previous_previous is not None
+                and i > 1
+                and j > 1
+                and left[i - 1] == right[j - 2]
+                and left[i - 2] == right[j - 1]
+            ):
+                value = min(value, previous_previous[j - 2] + 1)
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return limit + 1
+        previous_previous, previous = previous, current
+    return previous[-1]
+
+
+def _fuzzy_phrase_match(text_tokens: list[str], phrase_tokens: list[str], limit: int) -> bool:
+    if not phrase_tokens or len(phrase_tokens) > len(text_tokens):
+        return False
+    width = len(phrase_tokens)
+    for start in range(len(text_tokens) - width + 1):
+        window = text_tokens[start : start + width]
+        total = 0
+        for spoken, expected in zip(window, phrase_tokens, strict=True):
+            # One-letter words are too ambiguous for fuzzy matching.
+            if len(expected) < 3 or len(spoken) < 3:
+                if spoken != expected:
+                    total = limit + 1
+                    break
+                continue
+            distance = _levenshtein(spoken, expected, limit=limit)
+            total += distance
+            if total > limit:
+                break
+        if total <= limit:
+            return True
+    return False
+
+
+def contains_wake_word(
+    text: str,
+    phrases: list[str],
+    *,
+    fuzzy: bool = False,
+    max_distance: int = 1,
+) -> bool:
     normalized = f" {normalize_wake_text(text)} "
-    return any(f" {normalize_wake_text(phrase)} " in normalized for phrase in phrases if phrase)
+    for phrase in phrases:
+        normalized_phrase = normalize_wake_text(phrase)
+        if not normalized_phrase:
+            continue
+        if f" {normalized_phrase} " in normalized:
+            return True
+        if fuzzy and max_distance > 0:
+            text_tokens = normalize_wake_text(text).split()
+            phrase_tokens = normalized_phrase.split()
+            if _fuzzy_phrase_match(text_tokens, phrase_tokens, max_distance):
+                return True
+    return False

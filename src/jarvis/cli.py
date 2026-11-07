@@ -258,6 +258,20 @@ def start(
             cache_dir=paths.cache_dir / "whisper",
             language=config.language,
         )
+
+        console.print("[dim]Прогреваю модели (STT/TTS)…[/dim]")
+        warmups: list = []
+        if config.stt.warmup:
+            warmups.append(asyncio.to_thread(stt.warmup))
+        wake_warmup = getattr(detector, "warmup", None)
+        if callable(wake_warmup):
+            warmups.append(asyncio.to_thread(wake_warmup))
+        if not no_speak:
+            warmups.append(runtime.tts.warmup(config.language))
+        for result in await asyncio.gather(*warmups, return_exceptions=True):
+            if isinstance(result, Exception):
+                console.print(f"[yellow]Прогрев:[/yellow] {result}")
+
         source = WavSource(wav, block_ms=config.audio.block_ms) if wav is not None else None
         voice = VoiceLoop(
             runtime,
@@ -271,7 +285,8 @@ def start(
         )
         console.print(
             Panel(
-                f"Wake word: [bold]{config.wake.phrase}[/bold] ({detector.name})\n"
+                f"Wake word: [bold]{config.wake.phrase}[/bold] "
+                f"({detector.name}, {getattr(detector, 'model_path', '—')})\n"
                 f"STT:       {config.stt.model} ({config.language})\n"
                 f"RU голос:  {config.tts.ru.voice}\n"
                 f"EN голос:  {config.tts.en.voice}\n"
@@ -413,7 +428,7 @@ def voices(
     ),
     name: str | None = typer.Option(None, "--name", help="Имя голоса, например JARVIS"),
     source: str = typer.Option(
-        "voicestudio", "--from", help="voicestudio | file"
+        "file", "--from", help="file | assets | voicestudio"
     ),
     audio: Path | None = typer.Option(
         None, "--audio", help="Референс-аудио для --from file"
@@ -484,7 +499,8 @@ def voices(
         if not assets:
             console.print(
                 "[dim]Клон ещё не импортирован: "
-                "`jarvis voices import --name JARVIS --from voicestudio`[/dim]"
+                "`jarvis voices import --name JARVIS --from assets` "
+                "(или --from file --audio ... --text ...)[/dim]"
             )
         return
 
@@ -508,7 +524,8 @@ def voices(
                 console.print(f"[green]OmniVoice.cpp готов:[/green] {reason}")
                 console.print(
                     "Импортируйте голос: [bold]jarvis voices import "
-                    "--name JARVIS --from voicestudio[/bold]"
+                    "--name JARVIS --from assets[/bold] "
+                    "(или --from file --audio ... --text ...)"
                 )
             else:
                 console.print(f"[yellow]OmniVoice.cpp не готов:[/yellow] {reason}")
@@ -536,6 +553,17 @@ def voices(
         try:
             if source == "voicestudio":
                 asset = import_from_voicestudio(voice_name, paths, target=target)
+            elif source == "assets":
+                from .installer import reference_assets
+
+                found = reference_assets()
+                if found is None:
+                    raise typer.BadParameter(
+                        "Не найдены assets/ref.mp3 и assets/ref.txt"
+                    )
+                asset = import_from_file(
+                    voice_name, found[0], found[1], paths, target=target
+                )
             elif source == "file":
                 if audio is None or text is None:
                     raise typer.BadParameter("Для --from file нужны --audio и --text")
@@ -550,7 +578,9 @@ def voices(
                     target=target,
                 )
             else:
-                raise typer.BadParameter("--from должен быть voicestudio или file")
+                raise typer.BadParameter(
+                    "--from должен быть file, assets или voicestudio"
+                )
         except VoiceImportError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
@@ -636,12 +666,17 @@ def wake_test(
         None, "--engine", help="vad-whisper | openwakeword | porcupine"
     ),
     beep: bool = typer.Option(False, "--beep", help="Пищать при детекции."),
+    debug: bool = typer.Option(
+        False, "--debug", help="Печатать каждый распознанный wake-сегмент."
+    ),
 ) -> None:
     """Проверить wake word на живом микрофоне."""
     config, paths = _load(ctx)
     setup_logging(config.log_level, paths.log_file, console=console)
     if engine is not None:
         config.wake.engine = engine  # type: ignore[assignment]
+    if debug:
+        config.wake.debug = True
 
     from .audio.input import Microphone
     from .wake.base import create_detector
@@ -681,6 +716,7 @@ def wake_test(
         return Panel(
             f"score: [bold]{detector.last_score:.3f}[/bold]   "
             f"peak: {peak:.3f}   detections: [green]{detections}[/green]\n"
+            f"последний текст: {detector.last_text or '—'}\n"
             f"прошло: {elapsed:.1f} c",
             title="Слушаю…",
         )

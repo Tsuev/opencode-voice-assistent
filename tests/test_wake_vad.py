@@ -57,6 +57,22 @@ def test_vad_whisper_ignores_other_speech() -> None:
     assert detector.last_text == ""
 
 
+def test_vad_whisper_accepts_fuzzy_russian_wake_word() -> None:
+    detector = VadWhisperDetector(
+        phrase="джарвис",
+        pre_roll_ms=0,
+        silence_ms=160,
+        min_speech_ms=80,
+        vad=_SequenceVad([True, False, False]),
+        transcriber=lambda _audio: "Джаврис!",
+    )
+
+    assert detector.process(_frame(100)) is False
+    assert detector.process(_frame(0)) is False
+    assert detector.process(_frame(0)) is True
+    assert detector.last_text == "Джаврис!"
+
+
 def test_vad_whisper_accepts_hey_jarvis_variant() -> None:
     detector = VadWhisperDetector(
         pre_roll_ms=0,

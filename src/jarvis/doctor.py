@@ -17,6 +17,7 @@ from .config import JarvisConfig
 from .opencode.agent import agent_target
 from .opencode.client import list_models
 from .paths import AppPaths
+from .toolchain import detect_toolchain
 
 Status = Literal["ok", "warn", "fail"]
 
@@ -74,6 +75,45 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
             None if uv else "curl -LsSf https://astral.sh/uv/install.sh | sh",
         )
     )
+
+    # Native toolchain -------------------------------------------------------
+    toolchain = detect_toolchain()
+    cmake_detail = str(toolchain.cmake or "не найден")
+    if toolchain.cmake_version:
+        cmake_detail += f" ({toolchain.cmake_version})"
+    checks.append(
+        Check(
+            "cmake",
+            "ok" if toolchain.cmake else "warn",
+            cmake_detail,
+            None
+            if toolchain.cmake
+            else "Windows: winget install Kitware.CMake; macOS: brew install cmake",
+        )
+    )
+    if sys.platform == "win32":
+        checks.append(
+            Check(
+                "c++ compiler",
+                "ok" if toolchain.has_compiler else "warn",
+                str(toolchain.cl or toolchain.gpp or "не найден"),
+                None
+                if toolchain.has_compiler
+                else "Visual Studio Build Tools → Desktop development with C++",
+            )
+        )
+        checks.append(
+            Check(
+                "nvcc",
+                "ok" if toolchain.nvcc else "warn",
+                str(toolchain.nvcc or "не найден"),
+                None
+                if toolchain.nvcc
+                else "CUDA Toolkit 12.x нужен для быстрого OmniVoice.cpp",
+            )
+        )
+        if toolchain.ninja:
+            checks.append(Check("ninja", "ok", str(toolchain.ninja)))
 
     # OpenCode ---------------------------------------------------------------
     opencode = shutil.which(config.opencode.binary)
@@ -322,7 +362,8 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
                 ", ".join(asset.name for asset in assets) if assets else "голос не импортирован",
                 None
                 if assets
-                else "jarvis voices import --name JARVIS --from voicestudio",
+                else "jarvis voices import --name JARVIS --from assets "
+                "(или --from file --audio ... --text ...)",
             )
         )
 
@@ -365,7 +406,8 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
                     "wake",
                     "ok",
                     f"vad-whisper, «{config.wake.phrase}», {config.wake.stt_model} "
-                    f"({config.wake.language})",
+                    f"({config.wake.language}), VAD {config.wake.vad_mode}"
+                    + (", fuzzy" if config.wake.fuzzy else ""),
                 )
             )
     elif config.wake.engine == "openwakeword":
@@ -377,12 +419,17 @@ def run_checks(config: JarvisConfig, paths: AppPaths) -> list[Check]:
             import openwakeword
 
             model = Path(openwakeword.__file__).parent / "resources/models/hey_jarvis_v0.1.onnx"
+            phrase = config.wake.phrase.strip().lower()
+            english_only = phrase in {"hey jarvis", "hey jarvis!"}
             checks.append(
                 Check(
                     "wake",
-                    "ok" if model.exists() else "fail",
-                    f"openwakeword, {config.wake.phrase} (порог {config.wake.threshold})",
-                    None if model.exists() else "Переустановите openwakeword",
+                    "ok" if model.exists() and english_only else "warn",
+                    f"openwakeword, «{config.wake.phrase}» (порог {config.wake.threshold})",
+                    None
+                    if model.exists() and english_only
+                    else "openWakeWord понимает только «Hey Jarvis». "
+                    "Для «Джарвис»/«Jarvis» поставьте wake.engine = \"vad-whisper\"",
                 )
             )
     elif config.wake.engine == "porcupine":

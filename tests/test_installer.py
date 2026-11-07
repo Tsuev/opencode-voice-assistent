@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 
 import httpx
 import pytest
+from rich.console import Console
 
 from jarvis import installer
-from jarvis.installer import InstallError, fetch_omnivoice_models
-from jarvis.paths import AppPaths
+from jarvis.config import load_config
+from jarvis.installer import InstallError, fetch_omnivoice_models, install
+from jarvis.paths import AppPaths, get_paths
 
 
 def _paths(tmp_path: Path) -> AppPaths:
@@ -97,3 +100,31 @@ def test_fetch_models_downloads_and_verifies(tmp_path: Path, monkeypatch) -> Non
 
     assert base_path.read_bytes() == base
     assert codec_path.read_bytes() == codec
+
+
+def test_reference_assets_finds_audio_and_text(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "ref.txt").write_text("текст", encoding="utf-8")
+    (assets / "ref.mp3").write_bytes(b"fake")
+
+    found = installer.reference_assets(assets)
+
+    assert found is not None
+    assert found[0].name == "ref.mp3"
+    assert found[1].name == "ref.txt"
+
+
+def test_fast_profile_does_not_require_voice_studio(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    install(
+        profile="fast",
+        offline=True,
+        warmup=False,
+        console=Console(file=io.StringIO()),
+    )
+
+    config = load_config(paths=get_paths())
+    assert config.tts.ru.engine == "piper"
+    assert config.tts.en.engine == "kokoro"
+    assert config.wake.engine == "vad-whisper"

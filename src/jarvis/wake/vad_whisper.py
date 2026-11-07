@@ -28,7 +28,21 @@ DEFAULT_BLOCK_MS = 80
 
 
 def _default_phrases(phrase: str) -> list[str]:
-    phrases = ["джарвис", "эй джарвис", "hey jarvis", "jarvis"]
+    # Whisper often writes proper nouns phonetically.  Keep the English
+    # "Hey Jarvis" variant (the user explicitly wants it) and tolerate the
+    # common Russian misspellings through fuzzy matching as well.
+    phrases = [
+        "джарвис",
+        "джаврис",
+        "джарвиз",
+        "джавис",
+        "jarvis",
+        "hey jarvis",
+        "эй джарвис",
+        "окей джарвис",
+        "ok jarvis",
+        "okay jarvis",
+    ]
     if phrase and phrase.strip():
         phrases.insert(0, phrase.strip())
     # Preserve order, drop duplicates.
@@ -50,13 +64,17 @@ class VadWhisperDetector:
         compute_type: str = "int8",
         cache_dir: Path | None = None,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
-        vad_mode: int = 2,
+        vad_mode: int = 1,
         pre_roll_ms: int = 400,
-        silence_ms: int = 600,
+        silence_ms: int = 450,
         min_speech_ms: int = 160,
         max_segment_s: float = 8.0,
         debounce: float = 1.2,
         threshold: float = 0.5,
+        fuzzy: bool = True,
+        fuzzy_distance: int = 1,
+        hotwords: str | None = None,
+        debug: bool = False,
         vad: object | None = None,
         transcriber: Callable[[np.ndarray], str] | None = None,
         console=None,
@@ -75,6 +93,10 @@ class VadWhisperDetector:
         self.max_segment_s = max_segment_s
         self.debounce = debounce
         self.threshold = threshold  # kept for the wake-test UI
+        self.fuzzy = fuzzy
+        self.fuzzy_distance = fuzzy_distance
+        self.hotwords = hotwords
+        self.debug = debug
         self.console = console
         self.last_score = 0.0
         self.last_text = ""
@@ -147,15 +169,26 @@ class VadWhisperDetector:
             samples = samples.astype(np.float32, copy=False)
         samples = samples.reshape(-1)
         model = self._load_model()
-        segments, _info = model.transcribe(
-            samples,
-            language=self.language,
-            beam_size=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-        )
+        options = {
+            "language": self.language,
+            "beam_size": 1,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+            "no_speech_threshold": 0.6,
+        }
+        if self.hotwords:
+            options["hotwords"] = self.hotwords
+        try:
+            segments, _info = model.transcribe(samples, **options)
+        except TypeError:
+            # Older faster-whisper releases do not accept ``hotwords``.
+            options.pop("hotwords", None)
+            segments, _info = model.transcribe(samples, **options)
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def warmup(self) -> None:
+        """Load the wake model so the first spoken word is not slower."""
+        self._load_model()
 
     # ------------------------------------------------------------------
     # segmentation
@@ -196,14 +229,25 @@ class VadWhisperDetector:
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("wake transcription failed: %s", exc)
             return False
+        elapsed = time.monotonic() - started
         if text:
             log.debug(
                 "wake segment %.2fs -> %r (%.2fs)",
                 audio.size / self.sample_rate,
                 text,
-                time.monotonic() - started,
+                elapsed,
             )
-        if text and contains_wake_word(text, self.phrases):
+            if self.debug and self.console is not None:
+                self.console.print(
+                    f"[dim]wake: {audio.size / self.sample_rate:.2f} c -> "
+                    f"{text!r} ({elapsed:.2f} c)[/dim]"
+                )
+        if text and contains_wake_word(
+            text,
+            self.phrases,
+            fuzzy=self.fuzzy,
+            max_distance=self.fuzzy_distance,
+        ):
             self.last_text = text
             self.last_audio = np.asarray(audio, dtype=np.int16)
             self.last_score = 1.0

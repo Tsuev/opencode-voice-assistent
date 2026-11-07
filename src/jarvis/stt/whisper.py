@@ -24,6 +24,16 @@ class WhisperSTT:
         self._model = None
         self._lock = threading.Lock()
 
+    def _model_options(self) -> dict[str, object]:
+        options: dict[str, object] = {
+            "device": self.config.device,
+            "compute_type": self.config.compute_type,
+            "download_root": str(self.cache_dir),
+        }
+        if self.config.cpu_threads:
+            options["cpu_threads"] = self.config.cpu_threads
+        return options
+
     def _load(self):
         if self._model is not None:
             return self._model
@@ -33,12 +43,7 @@ class WhisperSTT:
 
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    self._model = WhisperModel(
-                        self.config.model,
-                        device=self.config.device,
-                        compute_type=self.config.compute_type,
-                        download_root=str(self.cache_dir),
-                    )
+                    self._model = WhisperModel(self.config.model, **self._model_options())
                 except Exception as exc:  # noqa: BLE001 - cuBLAS may be missing
                     if self.config.device == "cpu":
                         raise
@@ -48,13 +53,12 @@ class WhisperSTT:
                         exc,
                     )
                     self.config.device = "cpu"
-                    self._model = WhisperModel(
-                        self.config.model,
-                        device="cpu",
-                        compute_type=self.config.compute_type,
-                        download_root=str(self.cache_dir),
-                    )
+                    self._model = WhisperModel(self.config.model, **self._model_options())
         return self._model
+
+    def warmup(self) -> None:
+        """Load the model at startup instead of during the first command."""
+        self._load()
 
     def _transcribe_sync(self, samples: np.ndarray, sample_rate: int) -> str:
         audio = np.asarray(samples)
@@ -71,14 +75,24 @@ class WhisperSTT:
             audio = soxr.resample(audio, sample_rate, 16000)
 
         model = self._load()
-        segments, _info = model.transcribe(
-            audio,
-            language=self.language,
-            beam_size=self.config.beam_size,
-            vad_filter=self.config.vad_filter,
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-        )
+        options: dict[str, object] = {
+            "language": self.language,
+            "beam_size": self.config.beam_size,
+            "vad_filter": self.config.vad_filter,
+            "condition_on_previous_text": False,
+            "no_speech_threshold": 0.6,
+        }
+        if self.config.hotwords:
+            options["hotwords"] = self.config.hotwords
+        if self.config.initial_prompt:
+            options["initial_prompt"] = self.config.initial_prompt
+        try:
+            segments, _info = model.transcribe(audio, **options)
+        except TypeError:
+            # Older faster-whisper releases do not accept all hint options.
+            options.pop("hotwords", None)
+            options.pop("initial_prompt", None)
+            segments, _info = model.transcribe(audio, **options)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     async def transcribe(self, samples: np.ndarray, sample_rate: int = 16000) -> str:

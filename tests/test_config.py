@@ -20,7 +20,7 @@ def test_defaults_are_local_and_jarvis() -> None:
     assert config.language == "ru"
     assert config.wake.engine == "vad-whisper"
     assert config.wake.phrase == "джарвис"
-    assert config.wake.stt_model == "tiny"
+    assert config.wake.stt_model == "base"
     assert config.stt.engine == "faster-whisper"
     assert config.tts.ru.engine == "piper"
     assert config.tts.en.engine == "kokoro"

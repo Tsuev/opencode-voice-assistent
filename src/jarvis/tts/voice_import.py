@@ -226,8 +226,11 @@ def load_asset(name: str, paths: AppPaths) -> VoiceAsset:
     text_path = directory / REFERENCE_TEXT
     if not audio_path.exists() or not text_path.exists():
         raise VoiceImportError(
-            f"Голос «{name}» не импортирован. Выполните: "
-            f"jarvis voices import --name {name} --from voicestudio"
+            f"Голос «{name}» не импортирован. Укажите референс-аудио и его "
+            "точный текст: jarvis voices import --name "
+            f"{name} --from file --audio ref.wav --text ref.txt "
+            "(или --from assets, если есть assets/ref.mp3 и ref.txt). "
+            "VoiceStudio нужен только при явном --from voicestudio."
         )
     profile_path = directory / PROFILE_JSON
     profile: dict[str, Any] = {}
